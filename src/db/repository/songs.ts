@@ -371,6 +371,23 @@ export async function listSongsBefore(
   return page;
 }
 
+/** The whole song library in the browse list's keyset order — the queue a tap
+ *  on the Songs list plays. Fetched at press time, O(library); browsing itself
+ *  stays on the bounded keyset pages above. The ORDER BY tuple is the keyset
+ *  one, so the queue order is the list order under either sort. */
+export async function listAllSongs(
+  db: InternalDb,
+  opts: { sortOrder?: SongSortOrder } = {},
+): Promise<SongListRow[]> {
+  const { sortCol, sortCol2 } = songSortCols(opts.sortOrder);
+  const order = sortCol2 ? `"${sortCol}", "${sortCol2}", "id"` : `"${sortCol}", "id"`;
+  const rows = await db.getAllAsync<SongListRow>(
+    `SELECT ${SONG_LIST_COLS} FROM songs ORDER BY ${order}`,
+  );
+  await hydrateSongRows(db, rows);
+  return rows;
+}
+
 export const countSongs = (db: InternalDb): Promise<number> => countRows(db, 'songs');
 
 /**

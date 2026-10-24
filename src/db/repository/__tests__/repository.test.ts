@@ -52,6 +52,7 @@ import {
   SONG_LIST_COLS,
   countSongs,
   deleteAlbumSongsNotIn,
+  listAllSongs,
   listSongs,
   songListRowToChild,
   listSongsBefore,
@@ -349,6 +350,23 @@ describe('songs repository', () => {
     // print as a real 0.0 dB in the track details sheet.
     expect(c.replayGain?.trackGain).toBe(-6.5);
     expect(c.replayGain?.albumGain).toBeUndefined();
+  });
+
+  it('listAllSongs returns the whole library in the keyset order, under either sort', async () => {
+    // Titles and artists disagree, and the ids run with neither — so each expected
+    // order below can only come from its own sort tuple (title: sort_title, id;
+    // artist: sort_artist, sort_title, id), not from insertion or id order.
+    await upsertSongs(db(), [
+      song('s-zulu', 'Zulu', { artist: 'Alpaca' }),
+      song('s-alpha', 'Alpha', { artist: 'Zebra' }),
+      song('s-mike', 'Mike', { artist: 'Mongoose' }),
+    ]);
+    const byTitle = await listAllSongs(db(), { sortOrder: 'title' });
+    expect(byTitle.map((r) => r.id)).toEqual(['s-alpha', 's-mike', 's-zulu']);
+    const byArtist = await listAllSongs(db(), { sortOrder: 'artist' });
+    expect(byArtist.map((r) => r.id)).toEqual(['s-zulu', 's-mike', 's-alpha']);
+    // No limit: every row comes back, not a page.
+    expect(byTitle).toHaveLength(3);
   });
 
   it('never defaults `created` to the epoch (the "Added 1 January 1970" bug)', async () => {
