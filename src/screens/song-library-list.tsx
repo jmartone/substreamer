@@ -7,6 +7,7 @@ import { useDownloadedSongs } from '../hooks/useDownloadedSongs';
 import { onPullToRefresh } from '../services/dataSyncService';
 import { playTrack } from '../services/playerService';
 import {
+  listAllSongs,
   listSongs,
   listSongsBefore,
   songCursorOf,
@@ -37,11 +38,6 @@ const ALL_LETTERS = new Set<string>([
   '#',
   ...Array.from({ length: 26 }, (_, i) => String.fromCharCode(65 + i)),
 ]);
-
-/** Play just the tapped song (a bounded keyset window can't be the whole queue). */
-const handleSongPress = (song: Child): void => {
-  void playTrack(song, [song]);
-};
 
 /**
  * Main song browse — reads bounded KEYSET pages from the normalized `songs` table
@@ -76,6 +72,24 @@ function KeysetSongList({
   // guard part-way through.
   const transitionRef = useRef(false);
   const sortOrder = layoutPreferencesStore((s) => s.songSortOrder);
+
+  // Tapping a track queues the WHOLE library — the loaded keyset window is not
+  // the queue. Fetched at press time, O(library).
+  const handleSongPress = useCallback(
+    (song: Child): void => {
+      void (async () => {
+        const db = getDb();
+        const list = db ? (await listAllSongs(db, { sortOrder })).map(songListRowToChild) : [];
+        const i = list.findIndex((s) => s.id === song.id);
+        if (i < 0) {
+          void playTrack(song, [song]);
+          return;
+        }
+        void playTrack(list[i], list);
+      })();
+    },
+    [sortOrder],
+  );
 
   const loadFirstPage = useCallback(async () => {
     const gen = (loadGenRef.current += 1);
@@ -292,6 +306,24 @@ function FilteredSongList({
   const downloadedSortKeyOf = useCallback(
     (r: DownloadedSongRow) => downloadedSongSortKey(r, sortOrder),
     [sortOrder],
+  );
+
+  // Tapping a track queues the whole FILTERED set, not one song. Both sets are
+  // already held whole — favourites as items, downloaded as rows — so the queue
+  // is a map over what the list shows, in the order it shows it.
+  const handleSongPress = useCallback(
+    (song: Child): void => {
+      const list = favoritesOnly
+        ? starred.map(starredItemOf)
+        : downloadedRows.map(downloadedSongRowToChild);
+      const i = list.findIndex((s) => s.id === song.id);
+      if (i < 0) {
+        void playTrack(song, [song]);
+        return;
+      }
+      void playTrack(list[i], list);
+    },
+    [favoritesOnly, starred, downloadedRows],
   );
 
   const viewProps = {

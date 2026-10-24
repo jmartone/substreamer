@@ -18,6 +18,7 @@ interface SongRender {
   loading?: boolean;
   emptyMessage?: string;
   emptySubtitle?: string;
+  onSongPress?: (song: Child) => void;
   onRefresh?: () => void | Promise<void>;
   onSeekLetter?: (letter: string) => void | Promise<void>;
   onScrollToTop?: () => boolean | Promise<boolean>;
@@ -51,6 +52,7 @@ import { songSortKeys } from '../../db/sortKeys';
 import { upsertSongs } from '../../db/repository/songs';
 import { markStarredSongs, replaceFavoriteSongs } from '../../db/repository/favorites';
 import { getDb } from '../../store/persistence/db';
+import { playTrack } from '../../services/playerService';
 import { favoritesStore } from '../../store/favoritesStore';
 import { layoutPreferencesStore } from '../../store/layoutPreferencesStore';
 import { musicCacheStore } from '../../store/musicCacheStore';
@@ -76,6 +78,8 @@ const markDownloadedInDb = (id: string, title = `Song ${id}`, artist?: string): 
 
 /** The last render's props — `mockRenders` grows for the life of a test. */
 const latest = (): SongRender => mockRenders[mockRenders.length - 1];
+
+const mockPlayTrack = jest.mocked(playTrack);
 
 beforeAll(() => ensureNormalizedSchema(db()));
 
@@ -500,5 +504,93 @@ describe('SongLibraryListScreen — the keyset list returns to the start of the 
     // Whatever won, the top seek still gets back to the library start from it.
     expect(latest().items[0]?.id).toBe('s0');
     expect(firstId).not.toBe('s0');
+  });
+});
+
+/**
+ * A tap on any of this screen's lists queues the whole set the list shows — the
+ * library, the favourites set, the downloaded set — never a one-song queue.
+ * A one-song queue is what left the player's Next control disabled on the
+ * Songs tab: index 0 of 1 is already the last track.
+ */
+describe('SongLibraryListScreen — a tap queues the whole set it was tapped from', () => {
+  beforeEach(() => {
+    mockPlayTrack.mockClear();
+  });
+
+  const tap = async (id: string): Promise<void> => {
+    await act(async () => {
+      latest().onSongPress?.(song(id));
+    });
+    await waitFor(() => expect(mockPlayTrack).toHaveBeenCalledTimes(1));
+  };
+
+  it('queues the whole library from the unfiltered list, past one keyset page', async () => {
+    // 130 rows: the loaded window is one 120-row page, so a queue built from
+    // the window — let alone from the tapped song alone — cannot reach 130.
+    const titles = new Map<string, string>();
+    for (let i = 0; i < 130; i += 1) {
+      const title = `${String.fromCharCode(65 + Math.floor((i / 130) * 26))}${i}`;
+      titles.set(`s${i}`, title);
+      const keys = songSortKeys({ title });
+      db().runSync('INSERT INTO songs (id, title, sort_title, duration) VALUES (?, ?, ?, ?)', [
+        `s${i}`,
+        title,
+        keys.sort_title,
+        10,
+      ]);
+    }
+    render(<SongLibraryListScreen />);
+    await waitFor(() => expect(latest().items.length).toBeGreaterThan(0));
+
+    await tap('s65');
+
+    const [start, queue] = mockPlayTrack.mock.calls[0] as unknown as [Child, Child[]];
+    expect(start.id).toBe('s65');
+    expect(queue).toHaveLength(130);
+    // In the list's own order: (sort_title, id), the keyset tuple.
+    const expected = [...titles.entries()]
+      .map(([id, title]) => ({ id, key: songSortKeys({ title }).sort_title }))
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : a.id < b.id ? -1 : 1))
+      .map((e) => e.id);
+    expect(queue.map((c) => c.id)).toEqual(expected);
+    // The tapped song sits mid-queue, so Next has somewhere to go.
+    const at = queue.findIndex((c) => c.id === 's65');
+    expect(at).toBeGreaterThan(0);
+    expect(at).toBeLessThan(queue.length - 1);
+  });
+
+  it('queues the whole favourites set under the favourites filter', async () => {
+    await upsertSongs(db(), [
+      song('a-lib', { title: 'Alpha' }),
+      song('m-lib', { title: 'Mike' }),
+      song('z-lib', { title: 'Zulu' }),
+    ]);
+    await markStarredSongs(db(), [
+      { id: 'a-lib', starredAt: 1 },
+      { id: 'm-lib', starredAt: 2 },
+      { id: 'z-lib', starredAt: 3 },
+    ]);
+    render(<SongLibraryListScreen favoritesOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(3));
+
+    await tap('m-lib');
+
+    const [start, queue] = mockPlayTrack.mock.calls[0] as unknown as [Child, Child[]];
+    expect(start.id).toBe('m-lib');
+    expect(queue.map((c) => c.id)).toEqual(['a-lib', 'm-lib', 'z-lib']);
+  });
+
+  it('queues the whole downloaded set under the downloaded filter', async () => {
+    markDownloadedInDb('a-dl', 'Alpha');
+    markDownloadedInDb('z-dl', 'Zulu');
+    render(<SongLibraryListScreen downloadedOnly />);
+    await waitFor(() => expect(latest().items).toHaveLength(2));
+
+    await tap('a-dl');
+
+    const [start, queue] = mockPlayTrack.mock.calls[0] as unknown as [Child, Child[]];
+    expect(start.id).toBe('a-dl');
+    expect(queue.map((c) => c.id)).toEqual(['a-dl', 'z-dl']);
   });
 });
